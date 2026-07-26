@@ -4,9 +4,9 @@
 import PackageDescription
 
 let package = Package(
-    name: "Zsign",
+	name: "Zsign",
 	platforms: [
-		.iOS(.v12),
+		.iOS(.v10),
 		.macOS(.v10_15),
 		.tvOS(.v12),
 		.watchOS(.v8),
@@ -22,14 +22,16 @@ let package = Package(
 			targets: ["ZsignSwift"]
 		),
 	],
-	dependencies: [
-		.package(url: "https://github.com/krzyzanowskim/OpenSSL", from: "3.3.3001")
-	],
+	dependencies: [],
 	targets: [
+		.binaryTarget(
+			name: "OpenSSL",
+			path: "Vendor/OpenSSL.xcframework"
+		),
 		.target(
 			name: "Zsign",
 			dependencies: [
-				.product(name: "OpenSSL", package: "OpenSSL")
+				"OpenSSL"
 			],
 			path: "src",
 			exclude: [
@@ -57,9 +59,6 @@ let package = Package(
 				.headerSearchPath("."),
 				.headerSearchPath("common"),
 				.unsafeFlags(["-std=c++17"])
-			],
-			linkerSettings: [
-				.linkedFramework("OpenSSL"),
 			]
 		),
 		.target(
