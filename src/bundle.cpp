@@ -273,10 +273,6 @@ bool ZBundle::SignNode(jvalue& jvNode)
 					signFailedFiles += "\n";
 //					return false;
 				}
-			} else {
-				signFailedFiles += strFile;
-				signFailedFiles += "\n";
-//				return false;
 			}
 		}
 	}

@@ -59,9 +59,15 @@ bool ZSHA::SHAFile(const char* szFile, string& strSHA1, string& strSHA256)
 	strSHA256.clear();
 	size_t sSize = 0;
 	uint8_t* pBase = (uint8_t*)ZFile::MapFile(szFile, 0, 0, &sSize, true);
-	// pBase may be NULL, but it's ok, because the file may be empty
-	ZSHA::SHA1(pBase, sSize, strSHA1);
-	ZSHA::SHA256(pBase, sSize, strSHA256);
+	if (NULL == pBase && sSize > 0) {
+		return false;
+	}
+
+	// OpenSSL 3.5 不再接受空文件的 NULL 数据指针。
+	static uint8_t empty = 0;
+	uint8_t* pData = NULL != pBase ? pBase : &empty;
+	ZSHA::SHA1(pData, sSize, strSHA1);
+	ZSHA::SHA256(pData, sSize, strSHA256);
 	if (NULL != pBase && sSize > 0) {
 		ZFile::UnmapFile(pBase, sSize);
 	}

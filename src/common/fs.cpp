@@ -15,6 +15,9 @@ bool ZFile::IsRegularFile(const char* path)
 void* ZFile::MapFile(const char* path, size_t offset, size_t size, size_t* psize, bool ro)
 {
 	void* base = NULL;
+	if (NULL != psize) {
+		*psize = 0;
+	}
 
 #ifdef _WIN32
 
@@ -43,16 +46,19 @@ void* ZFile::MapFile(const char* path, size_t offset, size_t size, size_t* psize
 #else
 
 	int fd = open(path, ro ? O_RDONLY : O_RDWR);
-	if (fd <= 0) {
+	if (fd < 0) {
 		if(chmod(path, 0755) == 0) {
 			fd = open(path, ro ? O_RDONLY : O_RDWR);
 		}
 	}
 	
-	if (fd > 0) {
+	if (fd >= 0) {
 		if (size <= 0) {
 			struct stat st = { 0 };
-			fstat(fd, &st);
+			if (fstat(fd, &st) != 0) {
+				close(fd);
+				return NULL;
+			}
 			size = st.st_size;
 		}
 
@@ -60,9 +66,11 @@ void* ZFile::MapFile(const char* path, size_t offset, size_t size, size_t* psize
 			*psize = size;
 		}
 
-		base = mmap(NULL, size, ro ? PROT_READ : PROT_READ | PROT_WRITE, MAP_SHARED, fd, offset);
-		if (MAP_FAILED == base) {
-			base = NULL;
+		if (size > 0) {
+			base = mmap(NULL, size, ro ? PROT_READ : PROT_READ | PROT_WRITE, MAP_SHARED, fd, offset);
+			if (MAP_FAILED == base) {
+				base = NULL;
+			}
 		}
 		close(fd);
 	}
