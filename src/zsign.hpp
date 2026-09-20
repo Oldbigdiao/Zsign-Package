@@ -35,6 +35,21 @@ int zsign(
 	void(^completionHandler)(BOOL success, NSError *error)
 );
 
+int zsignWithPolicy(
+	NSString *app,
+	NSString *prov,
+	NSString *key,
+	NSString *pass,
+	NSString *entitlement,
+	NSString *bundleid,
+	NSString *displayname,
+	NSString *bundleversion,
+	bool adhoc,
+	bool dontGenerateEmbeddedMobileProvision,
+	bool sha256Only,
+	void(^completionHandler)(BOOL success, NSError *error)
+);
+
 int checkCert(
 	NSString *prov,
 	NSString *key,

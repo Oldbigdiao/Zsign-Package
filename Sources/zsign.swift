@@ -8,6 +8,13 @@
 import Zsign
 
 public enum Zsign {
+	public enum SignaturePolicy {
+		/// 保留 SHA-1 与 SHA-256 CodeDirectory，兼容较早的系统。
+		case compatible
+		/// 仅生成 SHA-256 CodeDirectory，由调用方按目标系统选择。
+		case sha256Only
+	}
+
 	/// Checks if the MachO-file is properly signed
 	/// - Parameter appExecutable: Executable
 	/// - Returns: True if its signed
@@ -58,6 +65,7 @@ public enum Zsign {
 	///   - customVersion: Custom version for the app bundle
 	///   - adhoc: If the app bundle should be signed using Adhoc (no signing identity)
 	///   - removeProvision: If `embedded.mobileprovision` should be excluded when signing
+	///   - signaturePolicy: CodeDirectory hash policy; compatible by default
 	/// - Returns: True if its successful
 	static public func sign(
 		appPath: String = "",
@@ -70,9 +78,10 @@ public enum Zsign {
 		customVersion: String = "",
 		adhoc: Bool = false,
 		removeProvision: Bool = false,
+		signaturePolicy: SignaturePolicy = .compatible,
 		completion: ((Bool, Error?) -> Void)? = nil
 	) -> Bool {
-		if zsign(
+		if zsignWithPolicy(
 			appPath,
 			provisionPath,
 			p12Path,
@@ -82,7 +91,9 @@ public enum Zsign {
 			customName,
 			customVersion,
 			adhoc,
-			removeProvision,
+            // C++ 层参数表示保留描述文件，转换为 Swift API 的移除语义。
+            !removeProvision,
+			signaturePolicy == .sha256Only,
 			completion.map { callback in
 				{ success, error in
 					callback(success, error)

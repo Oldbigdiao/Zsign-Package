@@ -176,13 +176,32 @@ int zsign(
 	bool excludeprovion,
 	void(^completionHandler)(BOOL success, NSError *error)
 ) {
+	// 保留旧 C/ObjC 入口的通用兼容策略。
+	return zsignWithPolicy(app, prov, key, pass, entitlement, bundleid, displayname,
+		bundleversion, adhoc, excludeprovion, false, completionHandler);
+}
+
+int zsignWithPolicy(
+	NSString *app,
+	NSString *prov,
+	NSString *key,
+	NSString *pass,
+	NSString *entitlement,
+	NSString *bundleid,
+	NSString *displayname,
+	NSString *bundleversion,
+	bool adhoc,
+	bool excludeprovion,
+	bool sha256Only,
+	void(^completionHandler)(BOOL success, NSError *error)
+) {
 	ZTimer atimer;
 	ZTimer gtimer;
 	
 	bool bForce = true;
 	bool bWeakInject = false;
 	bool bAdhoc = adhoc;
-	bool bSHA256Only = false;
+	bool bSHA256Only = sha256Only;
 	
 	string strCertFile;
 	string strPKeyFile;
@@ -207,11 +226,19 @@ int zsign(
 	string strPath = [app cStringUsingEncoding:NSUTF8StringEncoding];
 	if (!ZFile::IsFileExists(strPath.c_str())) {
 		ZLog::ErrorV(">>> Invalid path! %s\n", strPath.c_str());
+		if (completionHandler) {
+			completionHandler(NO, [NSError errorWithDomain:@"Zsign" code:-1
+				userInfo:@{NSLocalizedDescriptionKey: @"待签名应用路径不存在。"}]);
+		}
 		return -1;
 	}
 	
 	ZSignAsset zsa;
 	if (!zsa.Init(strCertFile, strPKeyFile, strProvFile, strEntitleFile, strPassword, bAdhoc, bSHA256Only, false)) {
+		if (completionHandler) {
+			completionHandler(NO, [NSError errorWithDomain:@"Zsign" code:-2
+				userInfo:@{NSLocalizedDescriptionKey: @"签名身份初始化失败，请检查证书、密码和描述文件。"}]);
+		}
 		return -1;
 	}
 	
@@ -225,14 +252,16 @@ int zsign(
 	atimer.PrintResult(bRet, ">>> Signed %s!", bRet ? "OK" : "Failed");
 	
 	NSError* signError = nil;
-	if(!bundle.signFailedFiles.empty()) {
+	if(!bRet || !bundle.signFailedFiles.empty()) {
 		NSDictionary* userInfo = @{
-			NSLocalizedDescriptionKey : [NSString stringWithUTF8String:bundle.signFailedFiles.c_str()]
+			NSLocalizedDescriptionKey : bundle.signFailedFiles.empty() ? @"应用签名失败。" : [NSString stringWithUTF8String:bundle.signFailedFiles.c_str()]
 		};
 		signError = [NSError errorWithDomain:@"Failed to Sign" code:-1 userInfo:userInfo];
 	}
 	
-	completionHandler(bRet, signError);
+	if (completionHandler) {
+		completionHandler(bRet, signError);
+	}
 	
 	gtimer.Print(">>> Done.");
 	return bRet ? 0 : -1;

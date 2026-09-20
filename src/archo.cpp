@@ -379,13 +379,14 @@ bool ZArchO::BuildCodeSignature(ZSignAsset* pSignAsset,
 
 	uint64_t uExecSegFlags = 0;
 	if (MH_EXECUTE == m_uFileType) {
-		if (pSignAsset->m_bAdhoc || pSignAsset->m_bSingleBinary) {
-			uExecSegFlags = CS_EXECSEG_MAIN_BINARY;
-		}
+		uExecSegFlags = CS_EXECSEG_MAIN_BINARY;
 	}
 
-	if (NULL != strstr(strEntitlementsSlot.data() + 8, "<key>get-task-allow</key>")) {
-		// TODO: Check if get-task-allow is actually set to true
+	jvalue jvEntitlements;
+	if (jvEntitlements.read_plist(pSignAsset->m_strEntitleData) &&
+		jvEntitlements.has("get-task-allow") &&
+		jvEntitlements["get-task-allow"].is_bool() &&
+		jvEntitlements["get-task-allow"].as_bool()) {
 		uExecSegFlags |= CS_EXECSEG_MAIN_BINARY | CS_EXECSEG_ALLOW_UNSIGNED;
 	}
 
