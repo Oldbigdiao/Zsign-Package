@@ -6,8 +6,21 @@
 //
 
 import Zsign
+import Foundation
 
 public enum Zsign {
+	public enum PKCS12Error: Int, Error {
+		case invalidPassword = 1, invalidData, noPrivateKey, parseFailed
+	}
+
+	/// 只提取签名身份的公开证书，不向系统钥匙串导入私钥。
+	public static func certificateData(p12: Data, password: String) throws -> Data {
+		var errorCode = 0
+		guard let certificate = p12_certificate_data(p12, password, &errorCode) else {
+			throw PKCS12Error(rawValue: errorCode) ?? .parseFailed
+		}
+		return certificate
+	}
 	public enum SignaturePolicy {
 		/// 保留 SHA-1 与 SHA-256 CodeDirectory，兼容较早的系统。
 		case compatible

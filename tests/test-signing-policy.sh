@@ -31,7 +31,7 @@ if [[ -n "${ZSIGN_TEST_P12:-}${ZSIGN_TEST_PROFILE:-}${ZSIGN_TEST_PASSWORD_FILE:-
 fi
 
 # 编译真实的签名实现，验证产物中的 CodeDirectory，而不是匹配源码文本。
-sources=(archo.cpp bundle.cpp macho.cpp openssl.cpp signing.cpp zsign.mm
+sources=(archo.cpp bundle.cpp macho.cpp openssl.cpp openssl_tools.mm signing.cpp zsign.mm
     common/base64.cpp common/fs.cpp common/json.cpp common/log.cpp
     common/sha.cpp common/timer.cpp common/util.cpp)
 source_paths=()
@@ -42,7 +42,7 @@ xcrun clang++ -isysroot "$macos_sdk" -std=c++17 -fblocks -dynamiclib -Wno-deprec
     -framework Foundation -o "$work/libZsignNative.dylib"
 cat > "$work/module/module.modulemap" <<EOF
 module Zsign {
-    header "$root/src/zsign.hpp"
+    header "$root/src/include/ZSign.h"
     export *
 }
 EOF
