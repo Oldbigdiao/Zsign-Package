@@ -55,7 +55,7 @@ public enum Zsign {
 	/// - Parameter appExecutable: Executable
 	/// - Returns: String array with load commands if any
 	static public func listDylibs(appExecutable: String) -> [String] {
-		ListDylibs(appExecutable)
+		ListDylibs(appExecutable) ?? []
 	}
 	/// Matches and replaces load commands to an executable
 	/// - Parameters:

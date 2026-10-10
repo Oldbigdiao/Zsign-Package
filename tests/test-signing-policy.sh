@@ -65,6 +65,12 @@ func fixture(_ name: String) throws -> String {
     return app.path
 }
 
+// 无效文件的原生结果为 nil，Swift 列表接口不能因此强制解包崩溃。
+let invalidMachO = root.appendingPathComponent("invalid-mach-o.dylib")
+try Data("owned injected plugin".utf8).write(to: invalidMachO)
+precondition(Zsign.listDylibs(appExecutable: invalidMachO.path).isEmpty)
+precondition(Zsign.listDylibs(appExecutable: root.appendingPathComponent("missing-mach-o").path).isEmpty)
+
 var callbackCount = 0
 let defaultResult = Zsign.sign(appPath: try fixture("default"), adhoc: true) { success, error in
     precondition(success && error == nil)

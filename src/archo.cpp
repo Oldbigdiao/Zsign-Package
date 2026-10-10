@@ -759,50 +759,110 @@ std::vector<std::string> ZArchO::ListDylibs() {
 	return dylibList;
 }
 
-bool ZArchO::ChangeDylibPath(const char *oldPath, const char *newPath) {
-	if (NULL == m_pHeader) {
+bool ZArchO::ChangeDylibPath(const char *oldPath, const char *newPath, bool* changed) {
+	if (changed) *changed = false;
+	if (NULL == m_pHeader || NULL == oldPath || NULL == newPath) {
 		return false;
 	}
-	
-	uint8_t *pLoadCommand = m_pBase + m_uHeaderSize;
+	uint32_t oldSize = BO(m_pHeader->sizeofcmds);
+	if (m_uHeaderSize > m_uLength || oldSize > m_uLength - m_uHeaderSize) {
+		return false;
+	}
+	size_t newPathLength = strlen(newPath);
+	uint32_t alignment = m_b64Bit ? 8 : 4;
+	uint64_t requiredSize = (sizeof(dylib_command) + newPathLength + 1 + alignment - 1) / alignment * alignment;
+	if (requiredSize > UINT32_MAX) {
+		return false;
+	}
+	vector<uint8_t> commands;
+	uint32_t offset = 0;
+	uint32_t firstSectionOffset = m_uLength;
 	bool pathChanged = false;
-	uint32_t oldPathLength = (uint32_t)strlen(oldPath);
-	uint32_t newPathLength = (uint32_t)strlen(newPath);
-	uint32_t oldPathPadding = (8 - oldPathLength % 8) % 8;
-	uint32_t newPathPadding = (8 - newPathLength % 8) % 8;
-	uint32_t newLoadCommandSize = 0;
-	
+	// 先重建并检查整个命令区，空间不足时不写入；代码和数据的文件偏移保持不变。
 	for (uint32_t i = 0; i < BO(m_pHeader->ncmds); i++) {
-		load_command *plc = (load_command *)pLoadCommand;
-		uint32_t uLoadType = BO(plc->cmd);
-		
-		if (LC_LOAD_DYLIB == uLoadType || LC_LOAD_WEAK_DYLIB == uLoadType) {
-			dylib_command *dlc = (dylib_command *)pLoadCommand;
-			const char *szDyLib = (const char *)(pLoadCommand + BO(dlc->dylib.name.offset));
-			
-			if (strcmp(szDyLib, oldPath) == 0) {
-				uint32_t dylibPathOffset = sizeof(dylib_command);
-				uint32_t dylibPathSize = newPathLength + newPathPadding;
-				if (dylibPathOffset + dylibPathSize > BO(plc->cmdsize)) {
-					ZLog::Error(">>> Insufficient space to update dylib path!\n");
-					return false;
-				}
-				
-				memcpy(pLoadCommand + dylibPathOffset, newPath, newPathLength);
-				memset(pLoadCommand + dylibPathOffset + newPathLength, 0, newPathPadding);
-				
-				ZLog::PrintV(">>> Dylib Path Changed: %s -> %s\n", oldPath, newPath);
-				
-				pathChanged = true;
+		if (offset > oldSize || oldSize - offset < sizeof(load_command)) {
+			return false;
+		}
+		uint8_t *source = m_pBase + m_uHeaderSize + offset;
+		load_command *plc = (load_command *)source;
+		uint32_t size = BO(plc->cmdsize);
+		if (size < sizeof(load_command) || size > oldSize - offset) {
+			return false;
+		}
+		// 有些库在 __text 前还有常量节，扩展命令不能覆盖这些数据。
+		if (LC_SEGMENT == BO(plc->cmd)) {
+			if (size < sizeof(segment_command)) return false;
+			segment_command *segment = (segment_command *)source;
+			uint32_t count = BO(segment->nsects);
+			if (count > (size - sizeof(segment_command)) / sizeof(section)) return false;
+			for (uint32_t j = 0; j < count; j++) {
+				section *sect = (section *)(source + sizeof(segment_command) + j * sizeof(section));
+				uint32_t sectionOffset = BO(sect->offset);
+				if (sectionOffset > 0 && sectionOffset < firstSectionOffset) firstSectionOffset = sectionOffset;
+			}
+		} else if (LC_SEGMENT_64 == BO(plc->cmd)) {
+			if (size < sizeof(segment_command_64)) return false;
+			segment_command_64 *segment = (segment_command_64 *)source;
+			uint32_t count = BO(segment->nsects);
+			if (count > (size - sizeof(segment_command_64)) / sizeof(section_64)) return false;
+			for (uint32_t j = 0; j < count; j++) {
+				section_64 *sect = (section_64 *)(source + sizeof(segment_command_64) + j * sizeof(section_64));
+				uint32_t sectionOffset = BO(sect->offset);
+				if (sectionOffset > 0 && sectionOffset < firstSectionOffset) firstSectionOffset = sectionOffset;
 			}
 		}
-		
-		pLoadCommand += BO(plc->cmdsize);
+		bool matches = false;
+		if (LC_LOAD_DYLIB == BO(plc->cmd) || LC_LOAD_WEAK_DYLIB == BO(plc->cmd)) {
+			if (size < sizeof(dylib_command)) {
+				return false;
+			}
+			dylib_command *dlc = (dylib_command *)source;
+			uint32_t nameOffset = BO(dlc->dylib.name.offset);
+			if (nameOffset < sizeof(dylib_command) || nameOffset >= size ||
+				NULL == memchr(source + nameOffset, 0, size - nameOffset)) {
+				return false;
+			}
+			matches = 0 == strcmp((const char *)source + nameOffset, oldPath);
+		}
+		if (matches) {
+			uint32_t newSize = size > requiredSize ? size : (uint32_t)requiredSize;
+			size_t start = commands.size();
+			commands.resize(start + newSize, 0);
+			memcpy(commands.data() + start, source, sizeof(dylib_command));
+			dylib_command *dlc = (dylib_command *)(commands.data() + start);
+			dlc->cmdsize = BO(newSize);
+			dlc->dylib.name.offset = BO((uint32_t)sizeof(dylib_command));
+			memcpy(commands.data() + start + sizeof(dylib_command), newPath, newPathLength);
+			pathChanged = true;
+		} else {
+			commands.insert(commands.end(), source, source + size);
+		}
+		offset += size;
 	}
-	
-	if (!pathChanged) {
-		ZLog::PrintV(">>> Old Dylib Path Not Found: %s\n", oldPath);
+	if (offset != oldSize || commands.size() > m_uLength - m_uHeaderSize) {
+		return false;
 	}
-	
-	return pathChanged;
+	if (!pathChanged) return changed != nullptr;
+	uint64_t growth = commands.size() - oldSize;
+	uint32_t commandEnd = m_uHeaderSize + oldSize;
+	if (growth > m_uLoadCommandsFreeSpace || commandEnd > firstSectionOffset ||
+		growth > firstSectionOffset - commandEnd) {
+		ZLog::Error(">>> Insufficient space to update dylib path!\n");
+		return false;
+	}
+	memcpy(m_pBase + m_uHeaderSize, commands.data(), commands.size());
+	m_pHeader->sizeofcmds = BO((uint32_t)commands.size());
+	m_uLoadCommandsFreeSpace -= (uint32_t)growth;
+	// 后续命令可能移动，刷新签名及 LINKEDIT 的缓存地址。
+	uint8_t *command = m_pBase + m_uHeaderSize;
+	for (uint32_t i = 0; i < BO(m_pHeader->ncmds); i++) {
+		load_command *plc = (load_command *)command;
+		if (LC_CODE_SIGNATURE == BO(plc->cmd)) m_pCodeSignSegment = command;
+		if (LC_SEGMENT == BO(plc->cmd) && 0 == strcmp(((segment_command *)command)->segname, "__LINKEDIT")) m_pLinkEditSegment = command;
+		if (LC_SEGMENT_64 == BO(plc->cmd) && 0 == strcmp(((segment_command_64 *)command)->segname, "__LINKEDIT")) m_pLinkEditSegment = command;
+		command += BO(plc->cmdsize);
+	}
+	ZLog::PrintV(">>> Dylib Path Changed: %s -> %s\n", oldPath, newPath);
+	if (changed) *changed = true;
+	return true;
 }

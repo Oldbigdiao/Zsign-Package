@@ -271,7 +271,6 @@ bool ZBundle::SignNode(jvalue& jvNode)
 				if (!macho.Sign(m_pSignAsset, m_bForceSign, "", "", "", "")) {
 					signFailedFiles += strFile;
 					signFailedFiles += "\n";
-//					return false;
 				}
 			}
 		}
@@ -318,7 +317,6 @@ bool ZBundle::SignNode(jvalue& jvNode)
 		ZLog::ErrorV(">>> Can't parse BundleExecute file! %s\n", strExePath.c_str());
 		signFailedFiles += strExePath;
 		signFailedFiles += "\n";
-//		return false;
 		return true;
 	}
 

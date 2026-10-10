@@ -244,7 +244,6 @@ bool ZSignAsset::GenerateCMS(void* pscert, void* pspkey, const string& strCDHash
 		return CMSError();
 	}
 
-	//PEM_write_bio_CMS(out, cms);
 	if (!i2d_CMS_bio(out, cms)) {
 		return CMSError();
 	}
@@ -316,25 +315,6 @@ bool ZSignAsset::GetCertSubjectCN(void* pcert, string& strSubjectCN)
 	strSubjectCN.clear();
 	strSubjectCN.append((const char*)common_name_asn1->data, common_name_asn1->length);
 	return (!strSubjectCN.empty());
-}
-
-bool ZSignAsset::GetCertSubjectCN(const string& strCertData, string& strSubjectCN)
-{
-	if (strCertData.empty()) {
-		return false;
-	}
-
-	BIO* bcert = BIO_new_mem_buf(strCertData.c_str(), (int)strCertData.size());
-	if (!bcert) {
-		return CMSError();
-	}
-
-	X509* cert = PEM_read_bio_X509(bcert, NULL, 0, NULL);
-	if (!cert) {
-		return CMSError();
-	}
-
-	return GetCertSubjectCN(cert, strSubjectCN);
 }
 
 void ZSignAsset::ParseCertSubject(const string& strSubject, jvalue& jvSubject)

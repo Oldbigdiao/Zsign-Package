@@ -14,7 +14,7 @@ ZMachO::ZMachO()
 
 ZMachO::~ZMachO()
 {
-	FreeArchOes();
+	Free();
 }
 
 bool ZMachO::Init(const char* szFile)
@@ -52,18 +52,20 @@ void ZMachO::FreeArchOes()
 		ZArchO* archo = m_arrArchOes[i];
 		delete archo;
 	}
-	m_pBase = NULL;
-	m_sSize = 0;
 	m_arrArchOes.clear();
 }
 
 bool ZMachO::OpenFile(const char* szPath)
 {
-	FreeArchOes();
+	if (!Free()) return false;
 
 	m_sSize = 0;
 	m_pBase = (uint8_t*)ZFile::MapFile(szPath, 0, 0, &m_sSize, false);
 	if (NULL != m_pBase) {
+		if (m_sSize < sizeof(uint32_t)) {
+			Free();
+			return false;
+		}
 		uint32_t magic = *((uint32_t*)m_pBase);
 		if (FAT_CIGAM == magic || FAT_MAGIC == magic) {
 			fat_header* pFatHeader = (fat_header*)m_pBase;
@@ -74,16 +76,19 @@ bool ZMachO::OpenFile(const char* szPath)
 				uint32_t uArchLength = (FAT_MAGIC == magic) ? pFatArch->size : LE(pFatArch->size);
 				if (!NewArchO(pArchBase, uArchLength)) {
 					ZLog::ErrorV(">>> Invalid arch file in fat mach-o file!\n");
+					Free();
 					return false;
 				}
 			}
 		} else if (MH_MAGIC == magic || MH_CIGAM == magic || MH_MAGIC_64 == magic || MH_CIGAM_64 == magic) {
 			if (!NewArchO(m_pBase, (uint32_t)m_sSize)) {
 				ZLog::ErrorV(">>> Invalid mach-o file!\n");
+				Free();
 				return false;
 			}
 		} else {
 			ZLog::ErrorV(">>> Invalid mach-o file (2)!\n");
+			Free();
 			return false;
 		}
 	}
@@ -94,13 +99,18 @@ bool ZMachO::OpenFile(const char* szPath)
 bool ZMachO::CloseFile()
 {
 	if (NULL == m_pBase || m_sSize <= 0) {
-		return false;
+		m_pBase = NULL;
+		m_sSize = 0;
+		return true;
 	}
 
 	if (!ZFile::UnmapFile((void*)m_pBase, m_sSize)) {
 		ZLog::ErrorV(">>> CodeSign write(munmap) failed! Error: %p, %lu, %s\n", m_pBase, m_sSize, strerror(errno));
 		return false;
 	}
+	// 解除映射后再清空地址，避免 Free、析构或重新打开时漏释放或重复释放。
+	m_pBase = NULL;
+	m_sSize = 0;
 	return true;
 }
 
@@ -261,7 +271,6 @@ bool ZMachO::InjectDylib(bool bWeakInject, const char* szDylibFile)
 {
 	ZLog::WarnV(">>> InjectDylib: %s %s... \n", szDylibFile, bWeakInject ? "(weak)" : "");
 
-	vector<uint32_t> arrMachOesSizes;
 	for (size_t i = 0; i < m_arrArchOes.size(); i++) {
 		if (!m_arrArchOes[i]->InjectDylib(bWeakInject, szDylibFile)) {
 			ZLog::Error(">>> Failed!\n");
@@ -273,14 +282,18 @@ bool ZMachO::InjectDylib(bool bWeakInject, const char* szDylibFile)
 }
 
 bool ZMachO::ChangeDylibPath(const char *oldPath, const char *newPath) {
+	if (NULL == oldPath || NULL == newPath) return false;
 	ZLog::WarnV(">>> Change DyLib Path: %s -> %s ... \n", oldPath, newPath);
 	
-	bool pathChanged = true;
+	bool pathChanged = false;
 	for (size_t i = 0; i < m_arrArchOes.size(); i++) {
-		if (!m_arrArchOes[i]->ChangeDylibPath(oldPath, newPath)) {
+		// 在有边界保护的改写中区分无匹配与格式错误，避免预读损坏的路径。
+		bool changed = false;
+		if (!m_arrArchOes[i]->ChangeDylibPath(oldPath, newPath, &changed)) {
 			ZLog::Error(">>> Failed to change path in one of the architectures!\n");
-			pathChanged = false;
+			return false;
 		}
+		pathChanged = pathChanged || changed;
 	}
 	
 	if (pathChanged) {

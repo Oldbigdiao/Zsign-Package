@@ -2027,38 +2027,6 @@ string jwriter::vstring2s(const char* pstr)
 
 }
 
-string jwriter::vstring2html(const char* pstr)
-{
-
-	if (NULL != strpbrk(pstr, "<>\"")) {
-		string ret;
-		ret.reserve(strlen(pstr) * 2 + 3);
-		ret += "\\\"";
-		for (const char* c = pstr; 0 != *c; c++) {
-			switch (*c) {
-			case '<':
-				ret += "&lt;";
-				break;
-			case '>':
-				ret += "&gt;";
-				break;
-			case '\"':
-				ret += "&quot;";
-				break;
-				//	case '&':	ret += "&amp;";	break;
-			default:
-				ret += *c;
-				break;
-			}
-		}
-		ret += "\\\"";
-		return ret;
-	} else {
-		return string("\\\"") + pstr + "\\\"";
-	}
-
-}
-
 //////////////////////////////////////////////////////////////////////////
 jpreader::jpreader()
 {

@@ -338,7 +338,6 @@ private:
 	static	string	v2s(int64_t val);
 	static	string	v2s(const char* val);
 	static	string	vstring2s(const char* val);
-	static  string	vstring2html(const char* pstr);
 
 private:
 	string			m_tab;

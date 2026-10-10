@@ -23,7 +23,8 @@ public:
 	bool IsSigned() const;
 	bool InjectDylib(bool bWeakInject, const char* szDylibFile);
 	void RemoveDylibs(set<string> setDylibs);
-	bool ChangeDylibPath(const char *oldPath, const char *newPath);
+	// changed 非空时允许无匹配，通过输出区分无匹配与实际改写；格式损坏仍返回失败。
+	bool ChangeDylibPath(const char *oldPath, const char *newPath, bool* changed = nullptr);
 	std::vector<std::string> ListDylibs();
 	uint32_t ReallocCodeSignSpace(const string& strNewFile);
 
