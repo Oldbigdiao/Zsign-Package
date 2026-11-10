@@ -8,6 +8,8 @@ class ZBundle
 {
 public:
 	ZBundle();
+	static string BundleExecutable(const string& path);
+	static bool ValidateBundle(const string& path);
 
 public:
 	bool SignFolder(ZSignAsset* pSignAsset,
@@ -31,10 +33,10 @@ private:
 private:
 	bool FindAppFolder(const string& strFolder, string& strAppFolder);
 	bool GetObjectsToSign(const string& strFolder, jvalue& jvInfo);
-	bool GetSignFolderInfo(const string& strFolder, jvalue& jvNode, bool bGetName = false);
+	bool GetSignFolderInfo(const string& strFolder, jvalue& jvNode, bool bRoot = false);
 
 private:
-	bool GenerateCodeResources(const string& strFolder, jvalue& jvCodeRes);
+	bool GenerateCodeResources(const string& strFolder, const string& strBundleExe, jvalue& jvCodeRes);
 
 private:
 	bool			m_bForceSign;

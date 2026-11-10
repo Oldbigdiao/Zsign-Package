@@ -7,6 +7,7 @@ class ZFile
 {
 public:
 	static bool		ReadFile(const char* szFile, string& strData);
+	static bool		ReadFile(const char* szFile, string& strData, size_t maxSize);
 	static bool		ReadFileV(string& strData, const char* szPath, ...);
 	static bool		WriteFile(const char* szFile, const string& strData);
 	static bool		WriteFile(const char* szFile, const char* szData, size_t sLen);

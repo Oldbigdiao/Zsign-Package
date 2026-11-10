@@ -21,7 +21,7 @@ void* ZFile::MapFile(const char* path, size_t offset, size_t size, size_t* psize
 
 #ifdef _WIN32
 
-	HANDLE hFile = ::CreateFileA(path, ro ? GENERIC_READ : (GENERIC_READ | GENERIC_WRITE), ro ? FILE_SHARE_READ : (FILE_SHARE_READ | FILE_SHARE_WRITE), NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	HANDLE hFile = ::CreateFileA(path, ro ? GENERIC_READ : (GENERIC_READ | GENERIC_WRITE), ro ? FILE_SHARE_READ : (FILE_SHARE_READ | FILE_SHARE_WRITE), NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (INVALID_HANDLE_VALUE != hFile) {
 		if (size <= 0) {
 			size = ::GetFileSize(hFile, NULL);
@@ -45,20 +45,27 @@ void* ZFile::MapFile(const char* path, size_t offset, size_t size, size_t* psize
 
 #else
 
-	int fd = open(path, ro ? O_RDONLY : O_RDWR);
-	if (fd < 0) {
-		if(chmod(path, 0755) == 0) {
-			fd = open(path, ro ? O_RDONLY : O_RDWR);
+	const int flags = O_NOFOLLOW | O_NONBLOCK;
+	int fd = open(path, flags | (ro ? O_RDONLY : O_RDWR));
+	if (fd < 0 && !ro && errno == EACCES) {
+		int original = open(path, flags | O_RDONLY);
+		if (original >= 0) {
+			// 只在签名时通过已打开的普通文件恢复权限，读取路径永远不改权限。
+			struct stat st = {};
+			if (fstat(original, &st) == 0 && S_ISREG(st.st_mode) && st.st_nlink == 1 && fchmod(original, 0755) == 0) {
+				fd = open(path, flags | O_RDWR);
+			}
+			close(original);
 		}
 	}
 	
 	if (fd >= 0) {
+		struct stat st = {};
+		if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || (!ro && st.st_nlink != 1)) {
+			close(fd);
+			return NULL;
+		}
 		if (size <= 0) {
-			struct stat st = { 0 };
-			if (fstat(fd, &st) != 0) {
-				close(fd);
-				return NULL;
-			}
 			size = st.st_size;
 		}
 
@@ -143,29 +150,25 @@ bool ZFile::WriteFileV(const char* szData, size_t sLen, const char* szPath, ...)
 
 bool ZFile::ReadFile(const char* szFile, string& strData)
 {
+	return ReadFile(szFile, strData, SIZE_MAX);
+}
+
+bool ZFile::ReadFile(const char* szFile, string& strData, size_t maxSize)
+{
 	strData.clear();
 	FILE* fp = NULL;
 	_fopen64(fp, szFile, "rb");
-	if (NULL != fp) {
-		_fseeki64(fp, 0, SEEK_END);
-		int64_t to_read = _ftelli64(fp);
-		_fseeki64(fp, 0, SEEK_SET);
-		to_read = (to_read > 0 ? to_read : 0);
-		strData.resize((size_t)to_read);
-		if (strData.capacity() >= (size_t)to_read) {
-			int64_t readed = 0;
-			while (readed < to_read) {
-				size_t ret = fread(&(strData[(size_t)readed]), 1, (size_t)(to_read - readed), fp);
-				if (ret <= 0) {
-					break;
-				}
-				readed += ret;
-			}
-		}
+	if (NULL == fp) return false;
+	int64_t length = _fseeki64(fp, 0, SEEK_END) == 0 ? _ftelli64(fp) : -1;
+	if (length < 0 || (uint64_t)length > maxSize || _fseeki64(fp, 0, SEEK_SET) != 0) {
 		fclose(fp);
-		return (strData.size() == to_read);
+		return false;
 	}
-	return false;
+	strData.resize((size_t)length);
+	bool complete = fread(strData.data(), 1, strData.size(), fp) == strData.size();
+	fclose(fp);
+	if (!complete) strData.clear();
+	return complete;
 }
 
 bool ZFile::ReadFileV(string& strData, const char* szPath, ...)

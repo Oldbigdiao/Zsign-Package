@@ -24,13 +24,25 @@
 
 extern "C" {
 
+NSString *BundleExecutablePath(NSURL *folder) {
+	const char *path = folder.fileSystemRepresentation;
+	if (!folder.isFileURL || !path) return nil;
+	string executable = ZBundle::BundleExecutable(path);
+	return executable.empty() ? nil : [NSString stringWithUTF8String:executable.c_str()];
+}
+
+bool ValidateBundleForSigning(NSURL *folder) {
+	const char *path = folder.fileSystemRepresentation;
+	return folder.isFileURL && path && ZBundle::ValidateBundle(path);
+}
+
 bool CheckIfSigned(NSString *filePath) {
 	ZTimer gtimer;
 	@autoreleasepool {
 		std::string filePathStr = [filePath UTF8String];
 		
 		ZMachO machO;
-		bool initSuccess = machO.Init(filePathStr.c_str());
+		bool initSuccess = machO.Init(filePathStr.c_str(), true);
 		if (!initSuccess) {
 			gtimer.Print(">>> Failed to initialize ZMachO.");
 			return false;
@@ -111,7 +123,7 @@ NSArray<NSString *> *ListDylibs(NSString *filePath) {
 		std::string filePathStr = [filePath UTF8String];
 		
 		ZMachO machO;
-		bool initSuccess = machO.Init(filePathStr.c_str());
+		bool initSuccess = machO.Init(filePathStr.c_str(), true);
 		if (!initSuccess) {
 			gtimer.Print(">>> Failed to initialize ZMachO.");
 			return nil;

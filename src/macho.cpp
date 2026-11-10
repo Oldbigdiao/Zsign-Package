@@ -10,6 +10,7 @@ ZMachO::ZMachO()
 	m_pBase = NULL;
 	m_sSize = 0;
 	m_bCSRealloced = false;
+	m_bReadOnly = false;
 }
 
 ZMachO::~ZMachO()
@@ -17,9 +18,10 @@ ZMachO::~ZMachO()
 	Free();
 }
 
-bool ZMachO::Init(const char* szFile)
+bool ZMachO::Init(const char* szFile, bool bReadOnly)
 {
 	m_strFile = szFile;
+	m_bReadOnly = bReadOnly;
 	return OpenFile(szFile);
 }
 
@@ -60,7 +62,7 @@ bool ZMachO::OpenFile(const char* szPath)
 	if (!Free()) return false;
 
 	m_sSize = 0;
-	m_pBase = (uint8_t*)ZFile::MapFile(szPath, 0, 0, &m_sSize, false);
+	m_pBase = (uint8_t*)ZFile::MapFile(szPath, 0, 0, &m_sSize, m_bReadOnly);
 	if (NULL != m_pBase) {
 		if (m_sSize < sizeof(uint32_t)) {
 			Free();
@@ -133,7 +135,7 @@ bool ZMachO::CheckSignature() const
 
 bool ZMachO::Sign(ZSignAsset* pSignAsset, bool bForce, string strBundleId, string strInfoSHA1, string strInfoSHA256, const string& strCodeResourcesData)
 {
-	if (NULL == m_pBase || m_arrArchOes.empty()) {
+	if (m_bReadOnly || NULL == m_pBase || m_arrArchOes.empty()) {
 		return false;
 	}
 
@@ -269,6 +271,7 @@ bool ZMachO::ReallocCodeSignSpace()
 
 bool ZMachO::InjectDylib(bool bWeakInject, const char* szDylibFile)
 {
+	if (m_bReadOnly) return false;
 	ZLog::WarnV(">>> InjectDylib: %s %s... \n", szDylibFile, bWeakInject ? "(weak)" : "");
 
 	for (size_t i = 0; i < m_arrArchOes.size(); i++) {
@@ -282,7 +285,7 @@ bool ZMachO::InjectDylib(bool bWeakInject, const char* szDylibFile)
 }
 
 bool ZMachO::ChangeDylibPath(const char *oldPath, const char *newPath) {
-	if (NULL == oldPath || NULL == newPath) return false;
+	if (m_bReadOnly || NULL == oldPath || NULL == newPath) return false;
 	ZLog::WarnV(">>> Change DyLib Path: %s -> %s ... \n", oldPath, newPath);
 	
 	bool pathChanged = false;
@@ -316,6 +319,7 @@ std::vector<std::string> ZMachO::ListDylibs() {
 }
 
 bool ZMachO::RemoveDylib(const std::set<std::string> &dylibNames) {
+	if (m_bReadOnly) return false;
 	ZLog::Warn(">>> Removing specified dylibs...\n");
 	
 	bool removalSuccessful = true;

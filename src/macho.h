@@ -8,7 +8,7 @@ public:
 	~ZMachO();
 
 public:
-	bool Init(const char* szFile);
+	bool Init(const char* szFile, bool bReadOnly = false);
 	bool InitV(const char* szPath, ...);
 	bool Free();
 	void PrintInfo();
@@ -36,5 +36,6 @@ private:
 	string			m_strFile;
 	uint8_t*		m_pBase;
 	bool			m_bCSRealloced;
+	bool			m_bReadOnly;
 	vector<ZArchO*> m_arrArchOes;
 };

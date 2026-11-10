@@ -57,6 +57,12 @@ public enum Zsign {
 	static public func listDylibs(appExecutable: String) -> [String] {
 		ListDylibs(appExecutable) ?? []
 	}
+	public static func bundleExecutable(in folder: URL) -> URL? {
+		BundleExecutablePath(folder).map { URL(fileURLWithPath: $0) }
+	}
+	public static func validateBundleForSigning(in folder: URL) -> Bool {
+		ValidateBundleForSigning(folder)
+	}
 	/// Matches and replaces load commands to an executable
 	/// - Parameters:
 	///   - appExecutable: Executable

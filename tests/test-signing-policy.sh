@@ -112,6 +112,102 @@ try fm.createDirectory(at: invalidBundle, withIntermediateDirectories: true)
 expectFailure(invalidBundle.path, adhoc: true)
 precondition(!Zsign.sign(appPath: root.appendingPathComponent("missing.app").path, adhoc: true))
 
+func bundleInfo(in folder: URL, executable: String, info: String = "Info.plist") throws {
+    let path = folder.appendingPathComponent(info)
+    try fm.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try PropertyListSerialization.data(fromPropertyList: ["CFBundleIdentifier": "test.zsign.executable",
+        "CFBundleExecutable": executable, "CFBundleVersion": "1"], format: .binary, options: 0).write(to: path)
+}
+
+let sentinel = root.appendingPathComponent("outside")
+let fixtureBytes = try Data(contentsOf: root.appendingPathComponent("Fixture"))
+func writeSentinel() throws {
+    try fixtureBytes.write(to: sentinel, options: .atomic)
+    try fm.setAttributes([.posixPermissions: 0o444], ofItemAtPath: sentinel.path)
+}
+func assertSentinel(_ label: String) throws {
+    let mode = try fm.attributesOfItem(atPath: sentinel.path)[.posixPermissions] as? NSNumber
+    guard try Data(contentsOf: sentinel) == fixtureBytes, mode?.intValue == 0o444 else {
+        fputs("\(label) modified an external Mach-O or its mode.\n", stderr)
+        exit(1)
+    }
+}
+
+try writeSentinel()
+let escapedApp = URL(fileURLWithPath: try fixture("escaped"))
+try bundleInfo(in: escapedApp, executable: "../outside")
+let escapedResult = Zsign.sign(appPath: escapedApp.path, adhoc: true)
+try assertSentinel("Root traversal")
+precondition(!escapedResult)
+
+for (index, name) in ["", ".", "..", "/Fixture", "Contents/Fixture", "A\\B", "A:B", "Fixture\0ignored", "Directory"].enumerated() {
+    let app = URL(fileURLWithPath: try fixture("invalid-leaf-\(index)"))
+    try fm.createDirectory(at: app.appendingPathComponent("Contents"), withIntermediateDirectories: false)
+    try fm.createDirectory(at: app.appendingPathComponent("Directory"), withIntermediateDirectories: false)
+    for path in ["Contents/Fixture", "A\\B", "A:B"] {
+        try fm.copyItem(at: root.appendingPathComponent("Fixture"), to: app.appendingPathComponent(path))
+    }
+    try bundleInfo(in: app, executable: name)
+    expectFailure(app.path, adhoc: true)
+}
+
+for (index, bundleName, executable) in [(0, "PlugIns/Unsafe.appex", "../../../outside"),
+    (1, "Frameworks/Unsafe.framework", "../../../outside"), (2, "Watch/Unsafe.app", "../../../outside"),
+    (3, "PlugIns/Unsafe.xctest", "../../../outside"), (4, "PlugIns/Unsafe.appex", "Linked"),
+    (5, "Frameworks/Unsafe.framework", "HardLinked")] {
+    let app = URL(fileURLWithPath: try fixture("unsafe-nested-\(index)"))
+    let nested = app.appendingPathComponent(bundleName)
+    try bundleInfo(in: nested, executable: executable)
+    if executable == "Linked" {
+        try fm.createSymbolicLink(at: nested.appendingPathComponent(executable), withDestinationURL: sentinel)
+    } else if executable == "HardLinked" {
+        try fm.linkItem(at: sentinel, to: nested.appendingPathComponent(executable))
+    }
+    let result = Zsign.sign(appPath: app.path, adhoc: true)
+    try assertSentinel("Nested traversal or link in \(bundleName)")
+    precondition(!result)
+}
+
+let escapedResourcesApp = URL(fileURLWithPath: try fixture("escaped-resources"))
+let escapedFramework = escapedResourcesApp.appendingPathComponent("Frameworks/Unsafe.framework")
+try bundleInfo(in: escapedFramework, executable: "../../../outside", info: "Resources/Info.plist")
+expectFailure(escapedResourcesApp.path, adhoc: true)
+try assertSentinel("Framework Resources traversal")
+
+let largePlistApp = URL(fileURLWithPath: try fixture("large-nested-plist"))
+let largePlistExtension = largePlistApp.appendingPathComponent("PlugIns/Large.appex")
+try fm.createDirectory(at: largePlistExtension, withIntermediateDirectories: true)
+try fm.copyItem(at: root.appendingPathComponent("Fixture"), to: largePlistExtension.appendingPathComponent("Fixture"))
+try PropertyListSerialization.data(fromPropertyList: [
+    "CFBundleIdentifier": "test.zsign.large",
+    "CFBundleExecutable": "Fixture",
+    "Padding": Data(count: 1024 * 1024)
+], format: .binary, options: 0).write(to: largePlistExtension.appendingPathComponent("Info.plist"))
+precondition(!Zsign.validateBundleForSigning(in: largePlistApp))
+expectFailure(largePlistApp.path, adhoc: true)
+
+let readOnly = root.appendingPathComponent("read-only")
+try fm.copyItem(at: root.appendingPathComponent("Fixture"), to: readOnly)
+try fm.setAttributes([.posixPermissions: 0o444], ofItemAtPath: readOnly.path)
+precondition(Zsign.listDylibs(appExecutable: readOnly.path).contains("/usr/lib/libSystem.B.dylib"))
+let mode = try fm.attributesOfItem(atPath: readOnly.path)[.posixPermissions] as? NSNumber
+precondition(mode?.intValue == 0o444)
+
+let nestedApp = URL(fileURLWithPath: try fixture("valid-nested"))
+let flatFramework = nestedApp.appendingPathComponent("Frameworks/Flat.framework")
+let resourceFramework = nestedApp.appendingPathComponent("Frameworks/Resources.framework")
+let appExtension = nestedApp.appendingPathComponent("PlugIns/Valid.appex")
+for (bundle, executable, info) in [(flatFramework, "Flat", "Info.plist"),
+    (resourceFramework, "ResourcesFramework", "Resources/Info.plist"), (appExtension, "Valid", "Info.plist")] {
+    try bundleInfo(in: bundle, executable: executable, info: info)
+    try fm.copyItem(at: root.appendingPathComponent("Fixture"), to: bundle.appendingPathComponent(executable))
+}
+precondition(Zsign.sign(appPath: nestedApp.path, adhoc: true))
+for bundle in [flatFramework, resourceFramework, appExtension] {
+    precondition(fm.fileExists(atPath: bundle.appendingPathComponent("_CodeSignature/CodeResources").path))
+}
+print("Zsign bundle executable paths: external sentinels preserved, read-only inspection and valid nested bundles passed")
+
 if let p12Path = ProcessInfo.processInfo.environment["ZSIGN_TEST_P12"] {
     let environment = ProcessInfo.processInfo.environment
     let profilePath = environment["ZSIGN_TEST_PROFILE"]!

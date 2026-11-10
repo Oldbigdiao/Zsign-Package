@@ -4,6 +4,124 @@
 #include "macho.h"
 #include "sys/stat.h"
 #include "sys/types.h"
+#ifdef __APPLE__
+#include <CoreFoundation/CoreFoundation.h>
+#endif
+
+namespace {
+enum class PathKind { Missing, Directory, File, Unsafe };
+
+PathKind GetPathKind(const string& path)
+{
+#ifdef _WIN32
+	DWORD attributes = GetFileAttributesA(path.c_str());
+	if (attributes == INVALID_FILE_ATTRIBUTES) {
+		DWORD error = GetLastError();
+		return (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) ? PathKind::Missing : PathKind::Unsafe;
+	}
+	if (attributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DEVICE)) return PathKind::Unsafe;
+	return (attributes & FILE_ATTRIBUTE_DIRECTORY) ? PathKind::Directory : PathKind::File;
+#else
+	struct stat st = {};
+	if (lstat(path.c_str(), &st) != 0) return errno == ENOENT ? PathKind::Missing : PathKind::Unsafe;
+	if (S_ISDIR(st.st_mode)) return PathKind::Directory;
+	return S_ISREG(st.st_mode) && st.st_nlink == 1 ? PathKind::File : PathKind::Unsafe;
+#endif
+}
+
+string WithoutTrailingSeparators(const string& path)
+{
+#ifdef _WIN32
+	size_t end = path.find_last_not_of("/\\");
+#else
+	size_t end = path.find_last_not_of('/');
+#endif
+	return end == string::npos ? path : path.substr(0, end + 1);
+}
+
+bool IsExecutableName(const string& name)
+{
+	return !name.empty() && name != "." && name != ".." &&
+		name.find_first_of("/\\:") == string::npos && name.find('\0') == string::npos;
+}
+
+bool ReadSigningPlist(const string& data, jvalue& info)
+{
+#ifdef __APPLE__
+	CFDataRef bytes = CFDataCreate(kCFAllocatorDefault, reinterpret_cast<const UInt8*>(data.data()), data.size());
+	if (!bytes) return false;
+	CFPropertyListRef plist = CFPropertyListCreateWithData(kCFAllocatorDefault, bytes, kCFPropertyListImmutable, nullptr, nullptr);
+	CFRelease(bytes);
+	if (!plist) return false;
+	bool valid = CFGetTypeID(plist) == CFDictionaryGetTypeID();
+	if (valid) {
+		CFDictionaryRef dictionary = static_cast<CFDictionaryRef>(plist);
+		const pair<const char*, CFStringRef> keys[] = {
+			{"CFBundleExecutable", CFSTR("CFBundleExecutable")}, {"CFBundleIdentifier", CFSTR("CFBundleIdentifier")},
+			{"CFBundleVersion", CFSTR("CFBundleVersion")}, {"CFBundleDisplayName", CFSTR("CFBundleDisplayName")},
+			{"CFBundleName", CFSTR("CFBundleName")}
+		};
+		for (const auto& [key, lookup] : keys) {
+			bool executable = lookup == keys[0].second;
+			CFTypeRef value = CFDictionaryGetValue(dictionary, lookup);
+			if (!value) continue;
+			if (CFGetTypeID(value) != CFStringGetTypeID()) {
+				if (executable) valid = false;
+				continue;
+			}
+			CFStringRef str = static_cast<CFStringRef>(value);
+			CFRange range = CFRangeMake(0, CFStringGetLength(str));
+			CFIndex size = 0;
+			CFStringGetBytes(str, range, kCFStringEncodingUTF8, 0, false, nullptr, 0, &size);
+			string utf8(size, '\0');
+			CFIndex converted = CFStringGetBytes(str, range, kCFStringEncodingUTF8, 0, false,
+				reinterpret_cast<UInt8*>(utf8.data()), size, nullptr);
+			if (converted != range.length || utf8.find('\0') != string::npos) {
+				if (executable) valid = false;
+				continue;
+			}
+			info[key] = utf8;
+		}
+	}
+	CFRelease(plist);
+	return valid;
+#else
+	return info.read_plist(data) && info.is_object();
+#endif
+}
+
+enum class ExecutableStatus { Missing, Invalid, Valid };
+constexpr size_t MaxBundleInfoPlistSize = 1024 * 1024;
+
+ExecutableStatus ReadBundleExecutable(const string& folder, string& data, jvalue& info, string& executable)
+{
+	if (GetPathKind(folder) != PathKind::Directory) return ExecutableStatus::Invalid;
+	string infoPath = folder + "/Info.plist";
+	PathKind kind = GetPathKind(infoPath);
+	if (kind == PathKind::Missing && ZFile::IsPathSuffix(folder, ".framework")) {
+		string resources = folder + "/Resources";
+		PathKind resourcesKind = GetPathKind(resources);
+		if (resourcesKind != PathKind::Missing && resourcesKind != PathKind::Directory) return ExecutableStatus::Invalid;
+		if (resourcesKind == PathKind::Directory) {
+			infoPath = resources + "/Info.plist";
+			kind = GetPathKind(infoPath);
+		}
+	}
+	if (kind == PathKind::Missing) return ExecutableStatus::Missing;
+	if (kind != PathKind::File || !ZFile::ReadFile(infoPath.c_str(), data, MaxBundleInfoPlistSize) ||
+		!ReadSigningPlist(data, info)) return ExecutableStatus::Invalid;
+	if (!info.has("CFBundleExecutable")) return ExecutableStatus::Missing;
+	if (!info["CFBundleExecutable"].is_string()) return ExecutableStatus::Invalid;
+	string name = info["CFBundleExecutable"].as_string();
+	if (!IsExecutableName(name)) return ExecutableStatus::Invalid;
+#ifdef _WIN32
+	iconv ic;
+	name = ic.U82A(name);
+#endif
+	executable = folder + "/" + name;
+	return GetPathKind(executable) == PathKind::File ? ExecutableStatus::Valid : ExecutableStatus::Invalid;
+}
+}
 
 ZBundle::ZBundle()
 {
@@ -15,6 +133,7 @@ ZBundle::ZBundle()
 
 bool ZBundle::FindAppFolder(const string& strFolder, string& strAppFolder)
 {
+	if (GetPathKind(strFolder) != PathKind::Directory) return false;
 	if (ZFile::IsPathSuffix(strFolder, ".app") || ZFile::IsPathSuffix(strFolder, ".appex")) {
 		strAppFolder = strFolder;
 		return true;
@@ -22,7 +141,7 @@ bool ZBundle::FindAppFolder(const string& strFolder, string& strAppFolder)
 
 	ZFile::EnumFolder(strFolder.c_str(), true, [&](bool bFolder, const string& strPath) {
 		string strName = ZUtil::GetBaseName(strPath.c_str());
-		if ("__MACOSX" == strName) {
+		if ("__MACOSX" == strName || (bFolder && GetPathKind(strPath) != PathKind::Directory)) {
 			return true;
 		}
 		return false;
@@ -39,18 +158,32 @@ bool ZBundle::FindAppFolder(const string& strFolder, string& strAppFolder)
 	return (!strAppFolder.empty());
 }
 
-bool ZBundle::GetSignFolderInfo(const string& strFolder, jvalue& jvNode, bool bGetName)
+string ZBundle::BundleExecutable(const string& path)
 {
-	string strInfoPlistData;
-	string strInfoPlistPath = strFolder + "/Info.plist";
-	ZFile::ReadFile(strInfoPlistPath.c_str(), strInfoPlistData);
+	string data, executable;
+	jvalue info;
+	return ReadBundleExecutable(WithoutTrailingSeparators(path), data, info, executable) == ExecutableStatus::Valid ? executable : "";
+}
 
+bool ZBundle::ValidateBundle(const string& path)
+{
+	ZBundle bundle;
+	bundle.m_strAppFolder = WithoutTrailingSeparators(path);
+	jvalue root;
+	root["path"] = "/";
+	return bundle.GetSignFolderInfo(bundle.m_strAppFolder, root, true) && bundle.GetObjectsToSign(bundle.m_strAppFolder, root);
+}
+
+bool ZBundle::GetSignFolderInfo(const string& strFolder, jvalue& jvNode, bool bRoot)
+{
+	string strInfoPlistData, strExePath;
 	jvalue jvInfo;
-	jvInfo.read_plist(strInfoPlistData);
+	ExecutableStatus status = ReadBundleExecutable(strFolder, strInfoPlistData, jvInfo, strExePath);
+	if (!bRoot && status == ExecutableStatus::Missing) return true;
 	string strBundleId = jvInfo["CFBundleIdentifier"];
-	string strBundleExe = jvInfo["CFBundleExecutable"];
 	string strBundleVersion = jvInfo["CFBundleVersion"];
-	if (strBundleId.empty() || strBundleExe.empty()) {
+	if (status != ExecutableStatus::Valid || strBundleId.empty()) {
+		ZLog::ErrorV(">>> Invalid bundle executable or Info.plist: %s\n", strFolder.c_str());
 		return false;
 	}
 
@@ -60,14 +193,14 @@ bool ZBundle::GetSignFolderInfo(const string& strFolder, jvalue& jvNode, bool bG
 
 	jvNode["bundle_id"] = strBundleId;
 	jvNode["bundle_version"] = strBundleVersion;
-	jvNode["bundle_executable"] = strBundleExe;
+	jvNode["bundle_executable"] = jvInfo["CFBundleExecutable"];
 	jvNode["sha1"] = strInfoSHA1;
 	jvNode["sha256"] = strInfoSHA256;
 	if (!jvNode.has("path")) {
 		jvNode["path"] = strFolder.substr(m_strAppFolder.size() + 1);
 	}
 
-	if (bGetName) {
+	if (bRoot) {
 		string strBundleName = jvInfo["CFBundleDisplayName"];
 		if (strBundleName.empty()) {
 			strBundleName = jvInfo["CFBundleName"].as_cstr();
@@ -80,52 +213,30 @@ bool ZBundle::GetSignFolderInfo(const string& strFolder, jvalue& jvNode, bool bG
 
 bool ZBundle::GetObjectsToSign(const string& strFolder, jvalue& jvInfo)
 {
-	vector<string> allBundles;
-	
-	std::function<void(const string&)> findAllBundles = [&](const string& currentPath) {
-		ZFile::EnumFolder(currentPath.c_str(), false, NULL, [&](bool bFolder, const string& strPath) {
-			if (bFolder) {
-				if (ZFile::IsPathSuffix(strPath, ".app") ||
-					ZFile::IsPathSuffix(strPath, ".appex") ||
-					ZFile::IsPathSuffix(strPath, ".framework") ||
-					ZFile::IsPathSuffix(strPath, ".xctest")) {
-					allBundles.push_back(strPath);
-					findAllBundles(strPath);
-				} else {
-					findAllBundles(strPath);
-				}
+	bool valid = true;
+	bool enumerated = ZFile::EnumFolder(strFolder.c_str(), false, nullptr, [&](bool, const string& path) {
+		PathKind kind = GetPathKind(path);
+		if (kind == PathKind::Directory) {
+			// 子包必须在父包之前签名，父包的 CodeResources 才能覆盖其最终内容。
+			valid = GetObjectsToSign(path, jvInfo);
+			if (valid && (ZFile::IsPathSuffix(path, ".app") || ZFile::IsPathSuffix(path, ".appex") ||
+				ZFile::IsPathSuffix(path, ".framework") || ZFile::IsPathSuffix(path, ".xctest"))) {
+				jvalue node;
+				valid = GetSignFolderInfo(path, node);
+				if (valid && node.has("bundle_executable")) jvInfo["folders"].push_back(node);
 			}
-			return false;
-		});
-	};
-	
-	findAllBundles(strFolder);
-	
-	sort(allBundles.begin(), allBundles.end(), [](const string& a, const string& b) {
-		size_t depthA = count(a.begin(), a.end(), '/');
-		size_t depthB = count(b.begin(), b.end(), '/');
-		// deeper paths first
-		return depthA > depthB;
-	});
-	
-	for (const string& bundlePath : allBundles) {
-		jvalue jvNode;
-		if (GetSignFolderInfo(bundlePath, jvNode)) {
-			jvInfo["folders"].push_back(jvNode);
+		} else if (kind == PathKind::File) {
+			if (ZFile::IsPathSuffix(path, ".dylib")) jvInfo["files"].push_back(path.substr(m_strAppFolder.size() + 1));
+		} else {
+			ZLog::ErrorV(">>> Unsafe bundle entry: %s\n", path.c_str());
+			valid = false;
 		}
-	}
-	
-	ZFile::EnumFolder(strFolder.c_str(), true, NULL, [&](bool bFolder, const string& strPath) {
-		if (!bFolder && ZFile::IsPathSuffix(strPath, ".dylib")) {
-			jvInfo["files"].push_back(strPath.substr(m_strAppFolder.size() + 1));
-		}
-		return false;
+		return !valid;
 	});
-	
-	return true;
+	return enumerated && valid;
 }
 
-bool ZBundle::GenerateCodeResources(const string& strFolder, jvalue& jvCodeRes)
+bool ZBundle::GenerateCodeResources(const string& strFolder, const string& strBundleExe, jvalue& jvCodeRes)
 {
 	set<string> setFiles;
 	ZFile::EnumFolder(strFolder.c_str(), true, NULL, [&](bool bFolder, const string& strPath) {
@@ -137,13 +248,8 @@ bool ZBundle::GenerateCodeResources(const string& strFolder, jvalue& jvCodeRes)
 		return false;
 	});
 
-	jvalue jvInfo;
-	jvInfo.read_plist_from_file("%s/Info.plist", strFolder.c_str());
-	string strBundleExe = jvInfo["CFBundleExecutable"];
-
 #ifdef _WIN32
 	iconv ic;
-	strBundleExe = ic.U82A(strBundleExe);
 #endif
 
 	setFiles.erase("_CodeSignature/CodeResources");
@@ -310,6 +416,10 @@ bool ZBundle::SignNode(jvalue& jvNode)
 	}
 
 	string strExePath = strBaseFolder + "/" + strBundleExe;
+	if (!IsExecutableName(strBundleExe) || GetPathKind(strExePath) != PathKind::File) {
+		ZLog::ErrorV(">>> Invalid bundle executable: %s\n", strBaseFolder.c_str());
+		return false;
+	}
 	ZLog::PrintV(">>> SignFolder: %s, (%s)\n", ("/" == strFolder) ? ZUtil::GetBaseName(m_strAppFolder.c_str()) : strFolder.c_str(), strBundleExe.c_str());
 
 	ZMachO macho;
@@ -329,7 +439,7 @@ bool ZBundle::SignNode(jvalue& jvNode)
 	}
 
 	if (m_bForceSign || jvCodeRes.is_null()) { // create
-		if (!GenerateCodeResources(strBaseFolder, jvCodeRes)) {
+		if (!GenerateCodeResources(strBaseFolder, strBundleExe, jvCodeRes)) {
 			ZLog::ErrorV(">>> Create CodeResources failed! %s\n", strBaseFolder.c_str());
 			return false;
 		}
@@ -515,10 +625,21 @@ bool ZBundle::SignFolder(ZSignAsset* pSignAsset,
 		return false;
 	}
 
-	if (!FindAppFolder(strFolder, m_strAppFolder)) {
+	m_strAppFolder.clear();
+	if (!FindAppFolder(WithoutTrailingSeparators(strFolder), m_strAppFolder)) {
 		ZLog::ErrorV(">>> Can't find app folder! %s\n", strFolder.c_str());
 		return false;
 	}
+
+	// 每次从当前目录生成签名清单，旧缓存只决定是否复用签名，不能提供路径。
+	jvalue jvRoot;
+	auto readSigningTree = [&]() {
+		jvRoot.clear();
+		jvRoot["path"] = "/";
+		jvRoot["root"] = m_strAppFolder;
+		return GetSignFolderInfo(m_strAppFolder, jvRoot, true) && GetObjectsToSign(m_strAppFolder, jvRoot);
+	};
+	if (!readSigningTree()) return false;
 
 	if (!strBundleId.empty() || !strDisplayName.empty() || !strBundleVersion.empty()) {
 		m_bForceSign = true;
@@ -553,21 +674,9 @@ bool ZBundle::SignFolder(ZSignAsset* pSignAsset,
 		m_bForceSign = true;
 	}
 
-	jvalue jvRoot;
-	if (m_bForceSign) {
-		jvRoot["path"] = "/";
-		jvRoot["root"] = m_strAppFolder;
-		if (!GetSignFolderInfo(m_strAppFolder, jvRoot, true)) {
-			ZLog::ErrorV(">>> Can't get BundleID, BundleVersion, or BundleExecute in Info.plist! %s\n", m_strAppFolder.c_str());
-			return false;
-		}
-		if (!GetObjectsToSign(m_strAppFolder, jvRoot)) {
-			return false;
-		}
-		GetNodeChangedFiles(jvRoot, excludeProvisioning);
-	} else {
-		jvRoot.read_from_file("./.zsign_cache/%s.json", strCacheName.c_str());
-	}
+	if ((!strBundleId.empty() || !strDisplayName.empty() || !strBundleVersion.empty() || !arrInjectDylibs.empty()) &&
+		!readSigningTree()) return false;
+	GetNodeChangedFiles(jvRoot, excludeProvisioning);
 
 	string strAppName = jvRoot["name"];
 
